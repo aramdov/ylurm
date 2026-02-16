@@ -89,7 +89,7 @@ impl Default for KeyBindings {
             down: "j".to_string(),
             top: "g".to_string(),
             bottom: "G".to_string(),
-            toggle_logs: "l".to_string(),
+            toggle_logs: "o".to_string(),
             cancel_job: "x".to_string(),
             refresh: "r".to_string(),
             ssh_view_log: "s".to_string(),
@@ -167,7 +167,7 @@ up = "k"
 down = "j"
 top = "g"
 bottom = "G"
-toggle_logs = "l"
+toggle_logs = "o"
 cancel_job = "x"
 refresh = "r"
 ssh_view_log = "s"

@@ -4,6 +4,7 @@ mod slurm;
 mod ui;
 
 use std::io;
+use std::panic;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
@@ -33,6 +34,16 @@ struct Cli {
     config: Option<String>,
 }
 
+fn install_panic_hook() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        // Restore terminal before printing panic message
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        default_hook(panic_info);
+    }));
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -52,6 +63,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli.all {
         config.general.all_users = true;
     }
+
+    // Restore terminal on panic so it doesn't get stuck in raw mode
+    install_panic_hook();
 
     // Set up terminal
     enable_raw_mode()?;

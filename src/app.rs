@@ -60,7 +60,34 @@ impl App {
     }
 
     pub fn refresh_jobs(&mut self) {
+        // Collect previously-fetched scontrol details so we can transfer them
+        let old_details: Vec<(String, Option<String>, Option<String>)> = self.jobs.iter()
+            .filter(|j| j.stderr.is_some())
+            .map(|j| (j.job_id.clone(), j.stderr.clone(), j.stdout.clone()))
+            .collect();
+
+        let prev_job_id = self.selected_job().map(|j| j.job_id.clone());
+
         self.jobs = fetch_jobs(&self.config);
+
+        // Transfer scontrol details to new job structs (avoid re-fetching)
+        for job in &mut self.jobs {
+            if let Some((_, stderr, stdout)) = old_details.iter().find(|(id, _, _)| *id == job.job_id) {
+                job.stderr = stderr.clone();
+                job.stdout = stdout.clone();
+            }
+        }
+
+        // Try to preserve selection by matching job ID (like turm)
+        if let Some(ref prev_id) = prev_job_id {
+            if let Some(new_idx) = self.jobs.iter().position(|j| j.job_id == *prev_id) {
+                self.table_state.select(Some(new_idx));
+                // Same job still selected — don't nuke caches
+                return;
+            }
+        }
+
+        // Job disappeared or no previous selection — clamp index
         if let Some(selected) = self.table_state.selected() {
             if selected >= self.jobs.len() && !self.jobs.is_empty() {
                 self.table_state.select(Some(self.jobs.len() - 1));
@@ -99,8 +126,14 @@ impl App {
         }
 
         self.last_detail_job_id = Some(selected_id);
-        self.last_log_key = None;
         self.ensure_log_loaded();
+    }
+
+    /// Whether the log is currently scrolled to the bottom (or close enough)
+    pub fn is_at_bottom(&self) -> bool {
+        let viewport_lines = self.log_area.height.saturating_sub(2);
+        let max_scroll = (self.log_line_count as u16).saturating_sub(viewport_lines);
+        self.log_scroll >= max_scroll
     }
 
     /// Load the log content for the selected job (stdout or stderr based on mode)
@@ -110,9 +143,13 @@ impl App {
             None => return,
         };
 
-        if self.last_log_key.as_deref() == Some(&log_key) {
-            return; // already loaded
+        let is_reload = self.last_log_key.as_deref() == Some(&log_key);
+        if is_reload {
+            return; // same job, same mode — no reload needed
         }
+
+        // Remember if we were at the bottom before loading (for sticky-bottom)
+        let was_at_bottom = self.is_at_bottom() || self.log_preview.is_none();
 
         let (path, nodelist) = {
             let job = match self.selected_job() {
@@ -140,8 +177,10 @@ impl App {
                 self.log_line_count = content.lines().count();
                 self.log_preview = Some(content);
                 self.log_error = None;
-                // Auto-scroll to bottom so user sees the latest output
-                self.scroll_log_bottom();
+                // Only auto-scroll to bottom if user was already there (sticky bottom)
+                if was_at_bottom {
+                    self.scroll_log_bottom();
+                }
             }
             Err(e) => {
                 self.log_preview = None;

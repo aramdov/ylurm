@@ -93,3 +93,48 @@ status: active
 - No live tailing yet
 - Log preview UX needs iteration — scroll-to-bottom heuristic may not match all expectations
 - `nodes` field and `resolve_path` export still unused (compiler warnings)
+
+---
+
+## 2026-02-16: Scroll Stability, Scrollbar, Bugfixes (v0.3.0)
+
+### Investigated turm source code
+- turm uses background threads with `crossbeam::channel` + `notify` (inotify) for file reading
+- Key insight: **scroll state and content state are fully decoupled** — content updates never touch scroll fields
+- turm uses anchor+offset scroll model (Top/Bottom + offset from anchor)
+- turm preserves job selection by matching job ID across refreshes
+- turm has no scrollbar — we're ahead here
+
+### Fixed: scroll position reset every 2 seconds
+- **Root cause**: `refresh_jobs()` cleared `last_detail_job_id` and `last_log_key` on every refresh, forcing log reload and `scroll_log_bottom()` even when viewing the same job.
+- **Fix**: Preserve selection by matching job ID across refreshes (like turm). Caches only clear when the selected job actually changes or disappears.
+
+### Fixed: scontrol details lost on refresh
+- **Root cause**: `refresh_jobs()` replaces all Job structs with fresh ones from `fetch_jobs()`, which have `stderr: None, stdout: None`. The "skip cache clear" optimization meant scontrol was never re-called, so paths vanished.
+- **Fix**: Transfer previously-fetched scontrol details (stderr/stdout paths) from old job structs to new ones by matching job IDs.
+
+### Fixed: stdout/stderr toggle key
+- Default `toggle_logs` keybinding was `"l"`, but turm convention is `"o"`. Changed default to `"o"`.
+
+### Sticky bottom mode
+- Log preview only auto-scrolls to bottom on reload if user was already at the bottom.
+- If user scrolled up to read something, their position is preserved across refreshes.
+- New `is_at_bottom()` helper for the check.
+
+### Scrollbar widget
+- Added ratatui `Scrollbar` on the right edge of the log preview panel.
+- Only appears when content exceeds viewport height.
+- Uses `█` thumb and `│` track, no begin/end arrows.
+
+### Improved line indicator
+- Changed from `[L42/500]` (confusing scroll offset) to `[L42-72/500]` (visible line range).
+- Shows exactly which lines are on screen, like a range.
+
+### Panic hook
+- Added `install_panic_hook()` that restores terminal state (raw mode, alternate screen, mouse capture) if ylurm panics. No more stuck terminals.
+
+### Known issues (v0.3.0)
+- scontrol still called on first visit per job (subprocess spawn)
+- No live tailing yet (turm uses `notify` — future work)
+- `nodes` field and `resolve_path` export still unused (compiler warnings)
+- Future: tabbed right panel (Details | Jobstats), background file reading

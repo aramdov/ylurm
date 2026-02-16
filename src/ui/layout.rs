@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
 };
 
 use crate::app::{App, FocusPanel};
@@ -157,8 +157,12 @@ fn draw_stdout_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         label
     };
 
+    // Line range indicator: [L1-30/500] showing visible range
+    let viewport_lines = area.height.saturating_sub(2) as usize;
     let scroll_info = if app.log_line_count > 0 {
-        format!(" [L{}/{}]", app.log_scroll + 1, app.log_line_count)
+        let first_visible = app.log_scroll as usize + 1;
+        let last_visible = (app.log_scroll as usize + viewport_lines).min(app.log_line_count);
+        format!(" [L{}-{}/{}]", first_visible, last_visible, app.log_line_count)
     } else {
         String::new()
     };
@@ -189,6 +193,22 @@ fn draw_stdout_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .scroll((app.log_scroll, 0));
 
     f.render_widget(log_widget, area);
+
+    // Scrollbar on the right edge of the log panel
+    if app.log_line_count > viewport_lines {
+        let max_scroll = app.log_line_count.saturating_sub(viewport_lines);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll)
+            .position(app.log_scroll as usize);
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("█");
+
+        // Render scrollbar inside the block's border area
+        f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
