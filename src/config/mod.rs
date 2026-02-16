@@ -76,7 +76,7 @@ impl Default for GeneralConfig {
         Self {
             refresh_interval: 2,
             squeue_args: vec![],
-            all_users: false,
+            all_users: true,
         }
     }
 }
@@ -157,7 +157,7 @@ impl Config {
 # Refresh interval in seconds
 refresh_interval = 2
 # Show all users' jobs (false = only yours)
-all_users = false
+all_users = true
 # Extra squeue arguments
 # squeue_args = ["--partition=a100"]
 

@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use app::App;
+use app::{App, FocusPanel};
 use config::Config;
 
 #[derive(Parser)]
@@ -91,35 +91,52 @@ fn run_app(
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                // Ctrl+C always quits
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.code == KeyCode::Char('c')
-                {
-                    app.should_quit = true;
-                }
-
-                match key.code {
-                    KeyCode::Char(c) => {
-                        let ch = c.to_string();
-                        if ch == app.config.keybindings.quit {
-                            app.should_quit = true;
-                        } else if ch == app.config.keybindings.down {
-                            app.next_job();
-                        } else if ch == app.config.keybindings.up {
-                            app.previous_job();
-                        } else if ch == app.config.keybindings.top {
-                            app.select_first();
-                        } else if ch == app.config.keybindings.refresh {
-                            app.refresh_jobs();
-                        }
+            match event::read()? {
+                Event::Key(key) => {
+                    // Ctrl+C always quits
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c')
+                    {
+                        app.should_quit = true;
                     }
-                    KeyCode::Up => app.previous_job(),
-                    KeyCode::Down => app.next_job(),
-                    KeyCode::Home => app.select_first(),
-                    KeyCode::End => app.select_last(),
-                    _ => {}
+
+                    // Global keys (work in any focus)
+                    match key.code {
+                        KeyCode::Tab => { app.cycle_focus(); continue; }
+                        KeyCode::Esc => { app.focus_jobs(); continue; }
+                        _ => {}
+                    }
+
+                    match app.focus {
+                        FocusPanel::Jobs => handle_jobs_keys(&mut app, key),
+                        FocusPanel::Log => handle_log_keys(&mut app, key),
+                    }
                 }
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            let col = mouse.column;
+                            let row = mouse.row;
+                            if rect_contains(app.log_area, col, row) {
+                                app.focus = FocusPanel::Log;
+                            } else if rect_contains(app.job_list_area, col, row) {
+                                app.focus = FocusPanel::Jobs;
+                            }
+                        }
+                        MouseEventKind::ScrollUp => {
+                            if rect_contains(app.log_area, mouse.column, mouse.row) {
+                                app.scroll_log_up(3);
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if rect_contains(app.log_area, mouse.column, mouse.row) {
+                                app.scroll_log_down(3);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -132,4 +149,86 @@ fn run_app(
             return Ok(());
         }
     }
+}
+
+fn handle_jobs_keys(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match c {
+                    'd' => app.scroll_log_down(15),
+                    'u' => app.scroll_log_up(15),
+                    _ => {}
+                }
+            } else {
+                let ch = c.to_string();
+                if ch == app.config.keybindings.quit {
+                    app.should_quit = true;
+                } else if ch == app.config.keybindings.down {
+                    app.next_job();
+                } else if ch == app.config.keybindings.up {
+                    app.previous_job();
+                } else if ch == app.config.keybindings.top {
+                    app.select_first();
+                } else if ch == app.config.keybindings.bottom {
+                    app.select_last();
+                } else if ch == app.config.keybindings.refresh {
+                    app.refresh_jobs();
+                } else if ch == app.config.keybindings.toggle_logs {
+                    app.toggle_log_mode();
+                }
+            }
+        }
+        KeyCode::Up => app.previous_job(),
+        KeyCode::Down => app.next_job(),
+        KeyCode::Home => app.select_first(),
+        KeyCode::End => app.select_last(),
+        KeyCode::Enter => app.cycle_focus(),
+        _ => {}
+    }
+}
+
+fn handle_log_keys(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Char(c) => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match c {
+                    'd' => app.scroll_log_down(15),
+                    'u' => app.scroll_log_up(15),
+                    _ => {}
+                }
+            } else {
+                let ch = c.to_string();
+                if ch == app.config.keybindings.quit {
+                    app.should_quit = true;
+                } else if ch == app.config.keybindings.down || ch == app.config.keybindings.up {
+                    // j/k scroll the log when focused
+                    if ch == app.config.keybindings.down {
+                        app.scroll_log_down(1);
+                    } else {
+                        app.scroll_log_up(1);
+                    }
+                } else if ch == app.config.keybindings.top {
+                    app.scroll_log_top();
+                } else if ch == app.config.keybindings.bottom {
+                    app.scroll_log_bottom();
+                } else if ch == app.config.keybindings.toggle_logs {
+                    app.toggle_log_mode();
+                } else if ch == app.config.keybindings.refresh {
+                    app.refresh_jobs();
+                }
+            }
+        }
+        KeyCode::Up => app.scroll_log_up(1),
+        KeyCode::Down => app.scroll_log_down(1),
+        KeyCode::PageUp => app.scroll_log_up(30),
+        KeyCode::PageDown => app.scroll_log_down(30),
+        KeyCode::Home => app.scroll_log_top(),
+        KeyCode::End => app.scroll_log_bottom(),
+        _ => {}
+    }
+}
+
+fn rect_contains(rect: ratatui::layout::Rect, col: u16, row: u16) -> bool {
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }

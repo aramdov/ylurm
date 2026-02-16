@@ -6,20 +6,56 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
 };
 
-use crate::app::App;
+use crate::app::{App, FocusPanel};
 use crate::slurm::JobState;
 
+/// Border style for focused vs unfocused panels
+fn border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
 pub fn draw_ui(f: &mut Frame, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+    // Lazily fetch scontrol details for the selected job
+    app.ensure_job_details();
+
+    let main_and_status = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(2)])
         .split(f.area());
 
-    draw_job_list(f, app, chunks[0]);
-    draw_details(f, app, chunks[1]);
+    let main_area = main_and_status[0];
+    let status_area = main_and_status[1];
+
+    // Main content: jobs left, details+stdout right
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(main_area);
+
+    // Store rects for mouse hit testing
+    app.job_list_area = h_chunks[0];
+
+    draw_job_list(f, app, h_chunks[0]);
+
+    // Right side: details on top, stdout preview below
+    let v_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(10), Constraint::Min(5)])
+        .split(h_chunks[1]);
+
+    app.log_area = v_chunks[1];
+
+    draw_details(f, app, v_chunks[0]);
+    draw_stdout_preview(f, app, v_chunks[1]);
+    draw_status_bar(f, app, status_area);
 }
 
 fn draw_job_list(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
+    let focused = app.focus == FocusPanel::Jobs;
     let header_cells = ["", "JobID", "Part", "User", "Time", "Name"]
         .iter()
         .map(|h| Cell::from(*h).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
@@ -28,8 +64,7 @@ fn draw_job_list(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let rows: Vec<Row> = app
         .jobs
         .iter()
-        .enumerate()
-        .map(|(_i, job)| {
+        .map(|job| {
             let state_color = match job.state {
                 JobState::Running => Color::Green,
                 JobState::Pending => Color::Yellow,
@@ -65,55 +100,40 @@ fn draw_job_list(f: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(title))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(border_style(focused)),
+    )
     .row_highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
     f.render_stateful_widget(table, area, &mut app.table_state);
 }
 
 fn draw_details(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let detail_text = if let Some(idx) = app.table_state.selected() {
-        if let Some(job) = app.jobs.get(idx) {
-            let state_color = match job.state {
-                JobState::Running => Color::Green,
-                JobState::Pending => Color::Yellow,
-                JobState::Failed => Color::Red,
-                _ => Color::White,
-            };
+    let detail_text = if let Some(job) = app.selected_job() {
+        let state_color = match job.state {
+            JobState::Running => Color::Green,
+            JobState::Pending => Color::Yellow,
+            JobState::Failed => Color::Red,
+            _ => Color::White,
+        };
 
-            vec![
-                Line::from(vec![
-                    Span::styled("State    ", Style::default().fg(Color::Yellow)),
-                    Span::styled(format!("{:?}", job.state), Style::default().fg(state_color)),
-                ]),
-                Line::from(vec![
-                    Span::styled("Name     ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&job.name),
-                ]),
-                Line::from(vec![
-                    Span::styled("Command  ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&job.command),
-                ]),
-                Line::from(vec![
-                    Span::styled("Nodes    ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&job.nodelist),
-                ]),
-                Line::from(vec![
-                    Span::styled("TRES     ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&job.tres),
-                ]),
-                Line::from(vec![
-                    Span::styled("stderr   ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&job.stderr),
-                ]),
-                Line::from(vec![
-                    Span::styled("WorkDir  ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&job.work_dir),
-                ]),
-            ]
-        } else {
-            vec![Line::from("No job selected")]
-        }
+        let state_str = format!("{:?}", job.state);
+        let stderr_str = job.stderr.clone().unwrap_or_default();
+        let stdout_str = job.stdout.clone().unwrap_or_default();
+
+        vec![
+            detail_line("State    ", &state_str, Some(state_color)),
+            detail_line("Name     ", &job.name, None),
+            detail_line("Command  ", &job.command, None),
+            detail_line("Nodes    ", &job.nodelist, None),
+            detail_line("TRES     ", &job.tres, None),
+            detail_line("WorkDir  ", &job.work_dir, None),
+            detail_line("stderr   ", &stderr_str, None),
+            detail_line("stdout   ", &stdout_str, None),
+        ]
     } else {
         vec![Line::from("No job selected")]
     };
@@ -122,4 +142,115 @@ fn draw_details(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Details "));
 
     f.render_widget(details, area);
+}
+
+fn draw_stdout_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let focused = app.focus == FocusPanel::Log;
+    let label = if app.show_stderr { "stderr" } else { "stdout" };
+    let path_str = if let Some(job) = app.selected_job() {
+        if app.show_stderr {
+            job.stderr.as_deref().unwrap_or("stderr")
+        } else {
+            job.stdout.as_deref().unwrap_or("stdout")
+        }
+    } else {
+        label
+    };
+
+    let scroll_info = if app.log_line_count > 0 {
+        format!(" [L{}/{}]", app.log_scroll + 1, app.log_line_count)
+    } else {
+        String::new()
+    };
+    let title = format!(" {}: {}{} ", label, path_str, scroll_info);
+
+    let (content, style) = if let Some(ref error) = app.log_error {
+        (
+            format!("Read error: {}", error),
+            Style::default().fg(Color::Red),
+        )
+    } else if let Some(ref log) = app.log_preview {
+        (log.clone(), Style::default().fg(Color::White))
+    } else {
+        (
+            "Loading...".to_string(),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+
+    let log_widget = Paragraph::new(content)
+        .style(style)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(border_style(focused)),
+        )
+        .scroll((app.log_scroll, 0));
+
+    f.render_widget(log_widget, area);
+}
+
+fn draw_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let key = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let sep = Span::raw("  ");
+
+    let lines = match app.focus {
+        FocusPanel::Jobs => {
+            let toggle_label = if app.show_stderr { "stdout" } else { "stderr" };
+            vec![
+                Line::from(vec![
+                    Span::styled(" q", key), Span::raw(" quit"), sep.clone(),
+                    Span::styled("j/k", key), Span::raw(" navigate"), sep.clone(),
+                    Span::styled("g/G", key), Span::raw(" top/bottom"), sep.clone(),
+                    Span::styled(&app.config.keybindings.toggle_logs, key),
+                    Span::raw(format!(" toggle {}", toggle_label)), sep.clone(),
+                    Span::styled(&app.config.keybindings.refresh, key), Span::raw(" refresh"),
+                ]),
+                Line::from(vec![
+                    Span::styled(" Tab", key), Span::raw("/"),
+                    Span::styled("Enter", key), Span::raw(" focus log"), sep.clone(),
+                    Span::styled("^d/^u", key), Span::raw(" scroll log"), sep.clone(),
+                    Span::raw("mouse: click panel or scroll wheel"),
+                ]),
+            ]
+        }
+        FocusPanel::Log => {
+            let toggle_label = if app.show_stderr { "stdout" } else { "stderr" };
+            vec![
+                Line::from(vec![
+                    Span::styled(" LOG FOCUS", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    sep.clone(),
+                    Span::styled("j/k", key), Span::raw("/"),
+                    Span::styled("↑↓", key), Span::raw(" scroll"), sep.clone(),
+                    Span::styled("g/G", key), Span::raw(" top/bottom"), sep.clone(),
+                    Span::styled("PgUp/PgDn", key), Span::raw(" page"), sep.clone(),
+                    Span::styled("^d/^u", key), Span::raw(" half-page"),
+                ]),
+                Line::from(vec![
+                    Span::styled(" Esc", key), Span::raw("/"),
+                    Span::styled("Tab", key), Span::raw(" back to jobs"), sep.clone(),
+                    Span::styled(&app.config.keybindings.toggle_logs, key),
+                    Span::raw(format!(" toggle {}", toggle_label)), sep.clone(),
+                    Span::styled("q", key), Span::raw(" quit"),
+                ]),
+            ]
+        }
+    };
+
+    let status = Paragraph::new(lines)
+        .style(Style::default().bg(Color::DarkGray));
+
+    f.render_widget(status, area);
+}
+
+fn detail_line(label: &str, value: &str, value_color: Option<Color>) -> Line<'static> {
+    let val_style = match value_color {
+        Some(c) => Style::default().fg(c),
+        None => Style::default(),
+    };
+    Line::from(vec![
+        Span::styled(label.to_string(), Style::default().fg(Color::Yellow)),
+        Span::styled(value.to_string(), val_style),
+    ])
 }
