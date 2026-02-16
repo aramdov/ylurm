@@ -124,6 +124,10 @@ fn draw_details(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let stderr_str = job.stderr.clone().unwrap_or_default();
         let stdout_str = job.stdout.clone().unwrap_or_default();
 
+        // Highlight the currently active log source in cyan
+        let stderr_color = if app.show_stderr { Some(Color::Cyan) } else { None };
+        let stdout_color = if !app.show_stderr { Some(Color::Cyan) } else { None };
+
         vec![
             detail_line("State    ", &state_str, Some(state_color)),
             detail_line("Name     ", &job.name, None),
@@ -131,8 +135,8 @@ fn draw_details(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             detail_line("Nodes    ", &job.nodelist, None),
             detail_line("TRES     ", &job.tres, None),
             detail_line("WorkDir  ", &job.work_dir, None),
-            detail_line("stderr   ", &stderr_str, None),
-            detail_line("stdout   ", &stdout_str, None),
+            detail_line("stderr   ", &stderr_str, stderr_color),
+            detail_line("stdout   ", &stdout_str, stdout_color),
         ]
     } else {
         vec![Line::from("No job selected")]

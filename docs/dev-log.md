@@ -133,8 +133,12 @@ status: active
 ### Panic hook
 - Added `install_panic_hook()` that restores terminal state (raw mode, alternate screen, mouse capture) if ylurm panics. No more stuck terminals.
 
+### stdout/stderr toggle clarification
+- Toggle (`o`) works correctly. Apparent "bug" was Slurm behavior: many jobs send both stderr and stdout to the same file (e.g., `slurm-%j.out`). When paths are identical, toggling can't show different content because there is none.
+- Verified with `scontrol show job`: jobs with separate `--output`/`--error` paths (e.g., `.out`/`.err`) toggle correctly. Jobs using Slurm defaults have identical StdErr/StdOut paths.
+- Added cyan highlight on the active log source in the Details panel so it's visually clear which one is being viewed.
+
 ### Known issues (v0.3.0)
-- **stdout/stderr toggle (`o`) bug**: Changes the label/prefix but does not actually switch the displayed content. turm handles this correctly — needs investigation (likely `last_log_key` or cache not properly invalidating on toggle)
 - scontrol still called on first visit per job (subprocess spawn)
 - No live tailing yet (turm uses `notify` — future work)
 - `nodes` field and `resolve_path` export still unused (compiler warnings)
