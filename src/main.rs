@@ -131,7 +131,9 @@ fn run_app(
                         MouseEventKind::Down(MouseButton::Left) => {
                             let col = mouse.column;
                             let row = mouse.row;
-                            if rect_contains(app.log_area, col, row) {
+                            if rect_contains(app.details_area, col, row) {
+                                app.handle_details_click(col, row);
+                            } else if rect_contains(app.log_area, col, row) {
                                 app.focus = FocusPanel::Log;
                             } else if rect_contains(app.job_list_area, col, row) {
                                 app.focus = FocusPanel::Jobs;
