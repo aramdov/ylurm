@@ -48,6 +48,16 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         .split(h_chunks[1]);
 
     app.log_area = v_chunks[1];
+    app.details_area = v_chunks[0];
+
+    // Clamp log scroll to valid range now that we know the actual viewport size.
+    // ensure_job_details() above may have set log_scroll using a stale log_area
+    // (height=0 on first frame), causing scroll to overshoot past all content.
+    let viewport_lines = v_chunks[1].height.saturating_sub(2) as u16;
+    let max_scroll = (app.log_line_count as u16).saturating_sub(viewport_lines);
+    if app.log_scroll > max_scroll {
+        app.log_scroll = max_scroll;
+    }
 
     draw_details(f, app, v_chunks[0]);
     draw_stdout_preview(f, app, v_chunks[1]);
@@ -135,8 +145,8 @@ fn draw_details(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             detail_line("Nodes    ", &job.nodelist, None),
             detail_line("TRES     ", &job.tres, None),
             detail_line("WorkDir  ", &job.work_dir, None),
-            detail_line("stderr   ", &stderr_str, stderr_color),
-            detail_line("stdout   ", &stdout_str, stdout_color),
+            detail_line_with_copy("stderr   ", &stderr_str, stderr_color, app.showing_copy_feedback()),
+            detail_line_with_copy("stdout   ", &stdout_str, stdout_color, app.showing_copy_feedback()),
         ]
     } else {
         vec![Line::from("No job selected")]
@@ -178,12 +188,14 @@ fn draw_stdout_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(Color::Red),
         )
     } else if let Some(ref log) = app.log_preview {
-        (log.clone(), Style::default().fg(Color::White))
+        if log.is_empty() {
+            ("(empty file)".to_string(), Style::default().fg(Color::Yellow))
+        } else {
+            // Keep default foreground so logs are readable on both light and dark themes.
+            (log.clone(), Style::default())
+        }
     } else {
-        (
-            "Loading...".to_string(),
-            Style::default().fg(Color::DarkGray),
-        )
+        ("Loading...".to_string(), Style::default().fg(Color::DarkGray))
     };
 
     let log_widget = Paragraph::new(content)
@@ -216,6 +228,19 @@ fn draw_stdout_preview(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Show copy feedback if active
+    if app.showing_copy_feedback() {
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(" ✓ Copied to clipboard!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(""),
+        ];
+        let status = Paragraph::new(lines).style(Style::default().bg(Color::DarkGray));
+        f.render_widget(status, area);
+        return;
+    }
+
     let key = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
     let sep = Span::raw("  ");
 
@@ -276,5 +301,20 @@ fn detail_line(label: &str, value: &str, value_color: Option<Color>) -> Line<'st
     Line::from(vec![
         Span::styled(label.to_string(), Style::default().fg(Color::Yellow)),
         Span::styled(value.to_string(), val_style),
+    ])
+}
+
+fn detail_line_with_copy(label: &str, value: &str, value_color: Option<Color>, _feedback: bool) -> Line<'static> {
+    let val_style = match value_color {
+        Some(c) => Style::default().fg(c),
+        None => Style::default(),
+    };
+    if value.is_empty() {
+        return detail_line(label, value, value_color);
+    }
+    Line::from(vec![
+        Span::styled(label.to_string(), Style::default().fg(Color::Yellow)),
+        Span::styled(value.to_string(), val_style),
+        Span::styled(" 📋", Style::default().fg(Color::DarkGray)),
     ])
 }

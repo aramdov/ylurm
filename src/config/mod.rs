@@ -118,9 +118,14 @@ impl Default for DisplayConfig {
 
 impl Default for RemoteConfig {
     fn default() -> Self {
+        // Sensible defaults for the YerevaNN cluster: map node-local /raid/ paths
+        // to their NFS-accessible equivalents so logs are readable from any node.
+        let mut path_mappings = HashMap::new();
+        path_mappings.insert("/raid/".to_string(), "/nfs/dgx/raid/".to_string());
+
         Self {
             ssh_enabled: true,
-            path_mappings: HashMap::new(),
+            path_mappings,
             ssh_timeout: 5,
         }
     }
@@ -183,8 +188,9 @@ ssh_enabled = true
 ssh_timeout = 5
 
 # Map node-local paths to NFS-accessible paths (avoids SSH when possible)
-# [remote.path_mappings]
-# "/raid/asds/" = "/nfs/a100/asds/"
+# The default maps dgx's /raid/ to its NFS mount point.
+[remote.path_mappings]
+"/raid/" = "/nfs/dgx/raid/"
 "#
         .to_string()
     }

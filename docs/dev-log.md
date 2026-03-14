@@ -143,3 +143,32 @@ status: active
 - No live tailing yet (turm uses `notify` — future work)
 - `nodes` field and `resolve_path` export still unused (compiler warnings)
 - Future: tabbed right panel (Details | Jobstats), background file reading
+
+---
+
+## 2026-02-17: Log Visibility + Refresh Reload + TRES Fallback (v0.3.1)
+
+### Fixed: logs looked empty on light terminal themes
+- **Root cause**: log panel content style forced foreground to `Color::White`.
+- **Fix**: switched normal log text to `Style::default()` so terminal theme controls foreground color.
+
+### Fixed: selected job logs could stop updating/retrying
+- **Root cause**: when selection was preserved across refresh, `last_log_key` stayed cached, so `ensure_log_loaded()` skipped reload for the same `job_id:mode`.
+- **Fix**: on preserved selection refresh, clear only `last_log_key` so log content reloads each tick without discarding selected job state.
+
+### Fixed: TRES fallback from `scontrol` for jobs where `squeue %b` is `N/A`
+- Added `JobDetails` in `slurm::parser` and parse fallback candidates from:
+- `TresPerNode=...` (preferred)
+- `ReqTRES=...`
+- `TRES=...`
+- Treat non-zero `scontrol show job` exit as fetch failure instead of caching empty details.
+- In `ensure_job_details()`, if current `job.tres` is empty/`N/A`, apply parsed fallback when available.
+- Even when stderr/stdout is already cached, allow one backfill pass on job switch if `job.tres` is still empty/`N/A`.
+
+### Fixed: TRES fallback value lost after periodic refresh
+- **Root cause**: `refresh_jobs()` rebuilt job structs from `squeue` and only transferred `stderr/stdout` cache.
+- **Fix**: refresh transfer now also carries over prior non-empty/non-`N/A` `tres` value by job id.
+
+### Build/runtime notes
+- `cargo test`: all tests passing (21/21).
+- Release build currently fails on this host with cross-device archive rename (`EXDEV`); debug build was used for deployment to `~/bin/ylurm`.

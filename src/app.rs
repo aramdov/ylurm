@@ -1,3 +1,6 @@
+use std::io::Write;
+use std::time::Instant;
+
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 
@@ -28,6 +31,9 @@ pub struct App {
     /// Stored rects for mouse hit testing (set during draw)
     pub job_list_area: Rect,
     pub log_area: Rect,
+    pub details_area: Rect,
+    /// Show "Copied!" feedback until this instant
+    pub copy_feedback_until: Option<Instant>,
     /// Track which job_id we last fetched scontrol details for
     last_detail_job_id: Option<String>,
     /// Track which job_id + mode we last loaded log content for
@@ -52,6 +58,8 @@ impl App {
             focus: FocusPanel::Jobs,
             job_list_area: Rect::default(),
             log_area: Rect::default(),
+            details_area: Rect::default(),
+            copy_feedback_until: None,
             last_detail_job_id: None,
             last_log_key: None,
         };
@@ -61,9 +69,14 @@ impl App {
 
     pub fn refresh_jobs(&mut self) {
         // Collect previously-fetched scontrol details so we can transfer them
-        let old_details: Vec<(String, Option<String>, Option<String>)> = self.jobs.iter()
+        let old_details: Vec<(String, Option<String>, Option<String>, String)> = self.jobs.iter()
             .filter(|j| j.stderr.is_some())
-            .map(|j| (j.job_id.clone(), j.stderr.clone(), j.stdout.clone()))
+            .map(|j| (
+                j.job_id.clone(),
+                j.stderr.clone(),
+                j.stdout.clone(),
+                j.tres.clone(),
+            ))
             .collect();
 
         let prev_job_id = self.selected_job().map(|j| j.job_id.clone());
@@ -72,9 +85,15 @@ impl App {
 
         // Transfer scontrol details to new job structs (avoid re-fetching)
         for job in &mut self.jobs {
-            if let Some((_, stderr, stdout)) = old_details.iter().find(|(id, _, _)| *id == job.job_id) {
+            if let Some((_, stderr, stdout, tres)) = old_details.iter().find(|(id, _, _, _)| *id == job.job_id) {
                 job.stderr = stderr.clone();
                 job.stdout = stdout.clone();
+                if (job.tres.trim().is_empty() || job.tres == "N/A")
+                    && !tres.trim().is_empty()
+                    && tres != "N/A"
+                {
+                    job.tres = tres.clone();
+                }
             }
         }
 
@@ -82,7 +101,9 @@ impl App {
         if let Some(ref prev_id) = prev_job_id {
             if let Some(new_idx) = self.jobs.iter().position(|j| j.job_id == *prev_id) {
                 self.table_state.select(Some(new_idx));
-                // Same job still selected — don't nuke caches
+                // Same job still selected. Keep details cache, but force a log reload
+                // so output updates over time and retries after transient read failures.
+                self.last_log_key = None;
                 return;
             }
         }
@@ -109,17 +130,26 @@ impl App {
             return;
         }
 
-        // Skip scontrol if this job already has paths from a previous visit
+        // Skip scontrol if this job already has paths from a previous visit.
+        // Exception: if TRES is still empty/N/A, re-check details once when switching to this job.
         let already_has_details = self.selected_job()
             .map(|j| j.stderr.is_some())
             .unwrap_or(false);
+        let needs_tres_backfill = self.selected_job()
+            .map(|j| j.tres.trim().is_empty() || j.tres == "N/A")
+            .unwrap_or(false);
 
-        if !already_has_details {
-            if let Some((stderr, stdout)) = fetch_job_details(&selected_id) {
+        if !already_has_details || needs_tres_backfill {
+            if let Some(details) = fetch_job_details(&selected_id) {
                 if let Some(idx) = self.table_state.selected() {
                     if let Some(job) = self.jobs.get_mut(idx) {
-                        job.stderr = Some(stderr);
-                        job.stdout = Some(stdout);
+                        job.stderr = Some(details.stderr);
+                        job.stdout = Some(details.stdout);
+                        if (job.tres.trim().is_empty() || job.tres == "N/A")
+                            && details.tres.is_some()
+                        {
+                            job.tres = details.tres.unwrap_or_default();
+                        }
                     }
                 }
             }
@@ -143,8 +173,7 @@ impl App {
             None => return,
         };
 
-        let is_reload = self.last_log_key.as_deref() == Some(&log_key);
-        if is_reload {
+        if self.last_log_key.as_deref() == Some(&log_key) {
             return; // same job, same mode — no reload needed
         }
 
@@ -177,14 +206,13 @@ impl App {
                 self.log_line_count = content.lines().count();
                 self.log_preview = Some(content);
                 self.log_error = None;
-                // Only auto-scroll to bottom if user was already there (sticky bottom)
                 if was_at_bottom {
                     self.scroll_log_bottom();
                 }
             }
             Err(e) => {
                 self.log_preview = None;
-                self.log_error = Some(e);
+                self.log_error = Some(e.clone());
                 self.log_line_count = 0;
                 self.log_scroll = 0;
             }
@@ -265,4 +293,65 @@ impl App {
             self.table_state.select(Some(self.jobs.len() - 1));
         }
     }
+
+    /// Copy text to system clipboard via OSC 52 escape sequence (works in iTerm2, most modern terminals)
+    pub fn copy_to_clipboard(&mut self, text: &str) {
+        let encoded = base64_encode(text.as_bytes());
+        let osc = format!("\x1b]52;c;{}\x07", encoded);
+        let _ = std::io::stdout().write_all(osc.as_bytes());
+        let _ = std::io::stdout().flush();
+        self.copy_feedback_until = Some(Instant::now() + std::time::Duration::from_secs(2));
+    }
+
+    /// Handle a click in the details panel — copy stderr/stdout path if on those rows
+    pub fn handle_details_click(&mut self, _col: u16, row: u16) {
+        let inner_y = self.details_area.y + 1; // skip top border
+        let stderr_row = inner_y + 6;
+        let stdout_row = inner_y + 7;
+
+        if let Some(job) = self.selected_job() {
+            if row == stderr_row {
+                if let Some(ref path) = job.stderr {
+                    let path = path.clone();
+                    self.copy_to_clipboard(&path);
+                }
+            } else if row == stdout_row {
+                if let Some(ref path) = job.stdout {
+                    let path = path.clone();
+                    self.copy_to_clipboard(&path);
+                }
+            }
+        }
+    }
+
+    /// Whether we should show copy feedback right now
+    pub fn showing_copy_feedback(&self) -> bool {
+        self.copy_feedback_until
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((n >> 18) & 63) as usize] as char);
+        result.push(CHARS[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((n >> 6) & 63) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(n & 63) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
 }
